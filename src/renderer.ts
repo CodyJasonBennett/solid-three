@@ -1,78 +1,28 @@
 import * as THREE from 'three'
 import { createRenderer } from 'solid-js/universal'
 
+export type ConstructorRepresentation = new (...args: any[]) => any
+export type Catalogue = Record<string, ConstructorRepresentation>
+
 export interface EventHandlers {}
-
-/**
- * Describes how to attach an element via a property or set of add & remove callbacks.
- */
 export type Attach<O = any> = string | ((parent: any, self: O) => () => void)
+export type Args<T> = T extends ConstructorRepresentation ? ConstructorParameters<T> : any[]
 
-type Mutable<T> = { [K in keyof T]: T[K] | Readonly<T[K]> }
-type NonFunctionKeys<T> = { [K in keyof T]: T[K] extends Function ? never : K }[keyof T]
-type WithoutFunctions<T> = Pick<T, NonFunctionKeys<T>>
-type Overwrite<T, O> = Omit<T, NonFunctionKeys<O>> & O
-type ConstructorRepresentation = new (...args: any[]) => any
-type Args<T> = T extends ConstructorRepresentation ? ConstructorParameters<T> : T
-
-interface MathRepresentation {
-  set(...args: any[]): any
-}
-interface VectorRepresentation extends MathRepresentation {
-  setScalar(s: number): any
-}
-type MathProps<T> = {
-  [K in keyof T]: T[K] extends infer M
-    ? M extends THREE.Color
-      ? ConstructorParameters<typeof THREE.Color> | THREE.ColorRepresentation
-      : M extends MathRepresentation
-      ? M extends VectorRepresentation
-        ? M | Parameters<M['set']> | Parameters<M['setScalar']>[0]
-        : M | Parameters<M['set']>
-      : {}
-    : never
-}
-
-interface RaycastableRepresentation {
-  raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]): void
-}
-type EventProps<T> = T extends RaycastableRepresentation ? EventHandlers : {}
-
-type ThreeNodeProps<T, P = T extends Function ? T['prototype'] : {}> = {
-  args?: Args<T>
-  attach?: Attach<P>
+export interface InstanceProps<T = any, P = any> {
+  [key: string]: unknown
+  args?: Args<P>
   object?: T
-} & Partial<MathProps<P> & EventProps<P>>
+  dispose?: null
+  attach?: Attach<T>
+}
 
-interface ThreeNode<O = any> {
+export interface Instance<O = any> {
   type: string
-  parent: ThreeNode | null
-  children: ThreeNode[]
+  parent: Instance | null
+  children: Instance[]
   object: O | null
-  props: ThreeNodeProps<O>
+  props: InstanceProps<O>
 }
-
-export type Node<T extends Function> = Mutable<Overwrite<Partial<WithoutFunctions<T['prototype']>>, ThreeNodeProps<T>>>
-
-type ThreeExports = typeof THREE
-export type ThreeElements = {
-  [K in keyof ThreeExports as Uncapitalize<K>]: ThreeExports[K] extends ConstructorRepresentation
-    ? Omit<Node<ThreeExports[K]>, 'object'>
-    : never
-}
-
-declare global {
-  namespace JSX {
-    interface IntrinsicElements extends ThreeElements {
-      primitive: Omit<Node<any>, 'args'>
-    }
-  }
-}
-
-/**
- * Converts camelCase primitives to PascalCase.
- */
-const toPascalCase = (str: string): string => str.charAt(0).toUpperCase() + str.substring(1)
 
 /**
  * Resolves a potentially pierced key type against an object.
@@ -105,7 +55,7 @@ const INDEX_REGEX = /-\d+$/
 /**
  * Attaches an node to a parent via its `attach` prop.
  */
-function attach(parent: ThreeNode, child: ThreeNode): void {
+function attach(parent: Instance, child: Instance): void {
   if (typeof child.props.attach === 'string') {
     // If attaching into an array (foo-0), create one
     if (INDEX_REGEX.test(child.props.attach)) {
@@ -125,7 +75,7 @@ function attach(parent: ThreeNode, child: ThreeNode): void {
 /**
  * Removes an node from a parent via its `attach` prop.
  */
-function detach(parent: ThreeNode, child: ThreeNode): void {
+function detach(parent: Instance, child: Instance): void {
   if (typeof child.props.attach === 'string') {
     const { root, key } = resolve(parent.object, child.props.attach)
     root[key] = child.object.__previousAttach
@@ -137,48 +87,38 @@ function detach(parent: ThreeNode, child: ThreeNode): void {
 }
 
 // Internal instance props that shouldn't be written to objects
-const RESERVED_PROPS = ['args', 'attach', 'object']
+const RESERVED_PROPS = ['args', 'object', 'dispose', 'attach']
 
 /**
  * Safely mutates a THREE element, respecting special JSX syntax.
  */
-function applyProps<O = any>(object: ThreeNode<O>['object'], props: ThreeNodeProps<O>): void {
+function applyProps<O = any>(object: O, props: InstanceProps<O>): void {
   for (const prop in props) {
     // Skip reserved keys
     if (RESERVED_PROPS.includes(prop)) continue
 
-    // Resolve pierced props if able
+    // Resolve dash-case props if able
     const value = props[prop]
     const { root, key, target } = resolve(object, prop)
 
     // Prefer to use properties' copy and set methods.
     // Otherwise, mutate the property directly
-    if (target?.set) {
-      if (target.constructor === (value as Object).constructor) {
-        target.copy(value)
-      } else if (Array.isArray(value)) {
-        target.set(...value)
-      } else if (!(target instanceof THREE.Color) && target.setScalar) {
-        // Allow shorthand like scale={1}
-        target.setScalar(value)
-      } else {
-        target.set(value)
-      }
-    } else {
-      root[key] = value
-    }
+    if (!target?.set) root[key] = value
+    else if (target.copy && target.constructor === (value as Object).constructor) target.copy(value)
+    else if (Array.isArray(value)) target.set(...value)
+    else if (!(target instanceof THREE.Color) && target.setScalar) target.setScalar(value)
+    else target.set(value)
   }
 }
 
-const catalogue = THREE as unknown as Record<string, ConstructorRepresentation>
-
+const catalogue: Catalogue = {}
 /**
  * Extends the THREE catalogue, accepting an object of keys pointing to external classes.
  */
-export const extend = (objects: Partial<ThreeElements>): void => void Object.assign(catalogue, objects)
+export const extend = (objects: Partial<Catalogue>): void => void Object.assign(catalogue, objects)
 
-const renderer = createRenderer<ThreeNode>({
-  createElement(type: string) {
+export const renderer = createRenderer<Instance>({
+  createElement(type) {
     return {
       type,
       parent: null,
@@ -199,14 +139,13 @@ const renderer = createRenderer<ThreeNode>({
     if (!child.object) {
       if (child.type === 'primitive') {
         // Validate primitive
-        if (child.type === 'primitive' && !child.props.object)
-          throw new Error('"object" must be set when using primitives!')
+        if (!child.props.object) throw new Error('"object" must be set when using primitives!')
 
         // Link object
         child.object = child.props.object
       } else {
         // Validate target
-        const target = catalogue[toPascalCase(child.type)]
+        const target = catalogue[child.type.charAt(0).toUpperCase() + child.type.substring(1)]
         if (!target) throw new Error(`${child.type} is not a part of the THREE catalog! Did you forget to extend?`)
 
         // Create object
@@ -227,14 +166,16 @@ const renderer = createRenderer<ThreeNode>({
     child.parent = parent
     parent.children.push(child)
 
+    // Add or manually splice child
     if (child.props.attach) {
       attach(parent, child)
-    } else if (child.object instanceof THREE.Object3D) {
-      // If a previous child is specified, manually insert before it.
-      // Otherwise, use regular Object3D#add
-      if (beforeChild) {
+    } else if (parent.object instanceof THREE.Object3D && child.object instanceof THREE.Object3D) {
+      const objectIndex = parent.object.children.indexOf(beforeChild?.object)
+      if (objectIndex !== -1) {
+        this.removeNode(parent, beforeChild!)
+
         child.object.parent = parent.object
-        parent.object.children.splice(parent.children.indexOf(beforeChild.object), 0, child.object)
+        parent.object.children.splice(objectIndex, 0, child.object)
         child.object.dispatchEvent({ type: 'added' })
       } else {
         parent.object.add(child.object)
@@ -250,12 +191,12 @@ const renderer = createRenderer<ThreeNode>({
     // Remove object from parent
     if (child.props.attach) {
       detach(parent, child)
-    } else if (child.object instanceof THREE.Object3D) {
+    } else if (parent.object instanceof THREE.Object3D && child.object instanceof THREE.Object3D) {
       parent.object.remove(child.object)
     }
 
-    // Safely dispose of object (defer since PMREM disposal is blocking)
-    if (child.type !== 'primitive') requestIdleCallback(() => child.object.dispose?.())
+    // Safely dispose of object
+    if (child.props.dispose !== null && child.type !== 'primitive') child.object.dispose?.()
   },
   getParentNode(node) {
     return node.parent ?? undefined
@@ -276,78 +217,6 @@ const renderer = createRenderer<ThreeNode>({
   },
 })
 
-export interface RootState {
-  gl: THREE.WebGLRenderer
-  camera: THREE.PerspectiveCamera
-  scene: THREE.Scene
-}
-
-interface Root {
-  container: ThreeNode<THREE.Scene>
-  state: RootState
-}
-
-// Store roots here since we can render to multiple targets
-const roots = new WeakMap<HTMLCanvasElement, Root>()
-
-/**
- * Renders Solid elements into THREE elements.
- */
-export function render(element: ThreeNode, canvas: HTMLCanvasElement): RootState {
-  let root = roots.get(canvas)
-
-  // Initiate root
-  if (!root) {
-    // Create renderer
-    const gl = new THREE.WebGLRenderer({
-      canvas,
-      powerPreference: 'high-performance',
-      antialias: true,
-      alpha: true,
-    })
-    gl.setPixelRatio(2)
-
-    // Set artist-friendly color management defaults
-    gl.outputEncoding = THREE.sRGBEncoding
-    gl.toneMapping = THREE.ACESFilmicToneMapping
-
-    // Create camera
-    const camera = new THREE.PerspectiveCamera(75, 0, 0.1, 1000)
-    camera.position.set(0, 1.3, 3)
-
-    // Create scene
-    const scene = new THREE.Scene()
-
-    // Start render loop
-    gl.setAnimationLoop(() => gl.render(scene, camera))
-
-    // Init root
-    root = {
-      state: { gl, camera, scene },
-      container: {
-        type: 'container',
-        parent: null,
-        children: [],
-        object: scene,
-        props: {},
-      },
-    }
-    roots.set(canvas, root)
-  }
-
-  // Set initial size
-  const width = canvas.parentElement?.clientWidth ?? 0
-  const height = canvas.parentElement?.clientHeight ?? 0
-  root.state.gl.setSize(width, height)
-  root.state.camera.aspect = width / height
-  root.state.camera.updateProjectionMatrix()
-
-  // Render
-  renderer.render(() => element, root.container)
-
-  return root.state
-}
-
 export const {
   effect,
   memo,
@@ -362,3 +231,50 @@ export const {
 } = renderer
 
 export { For, Show, Suspense, SuspenseList, Switch, Match, Index, ErrorBoundary } from 'solid-js'
+
+type Mutable<T> = { [K in keyof T]: T[K] | Readonly<T[K]> }
+type NonFunctionKeys<T> = { [K in keyof T]: T[K] extends Function ? never : K }[keyof T]
+type Overwrite<T, O> = Omit<T, NonFunctionKeys<O>> & O
+
+interface MathRepresentation {
+  set(...args: number[]): any
+}
+interface VectorRepresentation extends MathRepresentation {
+  setScalar(s: number): any
+}
+type MathType<T extends MathRepresentation | THREE.Euler> = T extends THREE.Color
+  ? ConstructorParameters<typeof THREE.Color> | THREE.ColorRepresentation
+  : T extends VectorRepresentation | THREE.Layers | THREE.Euler
+  ? T | Parameters<T['set']> | number
+  : T | Parameters<T['set']>
+type WithMathProps<P> = { [K in keyof P]: P[K] extends MathRepresentation | THREE.Euler ? MathType<P[K]> : P[K] }
+
+interface RaycastableRepresentation {
+  raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]): void
+}
+type EventProps<P> = P extends RaycastableRepresentation ? Partial<EventHandlers> : {}
+
+type ElementProps<T extends ConstructorRepresentation, P = InstanceType<T>> = Partial<
+  Overwrite<WithMathProps<P>, EventProps<P>>
+>
+
+export type ThreeElement<T extends ConstructorRepresentation> = Mutable<
+  Overwrite<ElementProps<T>, Omit<InstanceProps<InstanceType<T>, T>, 'object'>>
+>
+
+type ThreeExports = typeof THREE
+type ThreeElementsImpl = {
+  [K in keyof ThreeExports as Uncapitalize<K>]: ThreeExports[K] extends ConstructorRepresentation
+    ? ThreeElement<ThreeExports[K]>
+    : never
+}
+
+export interface ThreeElements extends ThreeElementsImpl {
+  primitive: Omit<ThreeElement<any>, 'args'> & { object: object }
+}
+
+declare global {
+  namespace JSX {
+    interface IntrinsicElements extends ThreeElements {}
+  }
+}
