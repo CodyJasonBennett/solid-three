@@ -14,6 +14,7 @@ export interface InstanceProps<T = any, P = any> {
   object?: T
   dispose?: null
   attach?: Attach<T>
+  ref?: (object: T) => T
 }
 
 export interface Instance<O = any> {
@@ -87,7 +88,7 @@ function detach(parent: Instance, child: Instance): void {
 }
 
 // Internal instance props that shouldn't be written to objects
-const RESERVED_PROPS = ['args', 'object', 'dispose', 'attach']
+const RESERVED_PROPS = ['args', 'object', 'dispose', 'attach', 'ref']
 
 /**
  * Safely mutates a THREE element, respecting special JSX syntax.
@@ -117,7 +118,9 @@ const catalogue: Catalogue = {}
  */
 export const extend = (objects: Partial<Catalogue>): void => void Object.assign(catalogue, objects)
 
-export const renderer = createRenderer<Instance>({
+type RendererOptions<T> = Parameters<typeof createRenderer<T>>[0]
+
+const options: RendererOptions<Instance> = {
   createElement(type) {
     return {
       type,
@@ -127,12 +130,27 @@ export const renderer = createRenderer<Instance>({
       props: { args: [] },
     }
   },
-  setProperty(node, key, value) {
+  setProperty(node, key, value, prevValue) {
     // Write prop to node
     node.props[key] = value
 
     // If at runtime, apply prop directly to the object
-    if (node.object) applyProps(node.object, { [key]: value })
+    if (node.object) {
+      applyProps(node.object, { [key]: value })
+
+      // Reconstruct instance on object or args change
+      if (
+        (node.type === 'primitive' && key === 'object' && value !== prevValue) ||
+        (key === 'args' &&
+          ((value as any[] | undefined)?.length !== (prevValue as any[] | undefined)?.length ||
+            (value as any[] | undefined)?.some((v, i) => v !== (prevValue as any[] | undefined)?.[i])))
+      ) {
+        const parent = node.parent!
+        options.removeNode(parent, node)
+        delete node.object
+        options.insertNode(parent, node)
+      }
+    }
   },
   insertNode(parent, child, beforeChild) {
     // Create object on first commit
@@ -160,6 +178,9 @@ export const renderer = createRenderer<Instance>({
 
       // Set initial props
       applyProps(child.object, child.props)
+
+      // Expose child.object as ref
+      child.props.ref?.(child.object)
     }
 
     // Link nodes
@@ -215,7 +236,24 @@ export const renderer = createRenderer<Instance>({
   isTextNode() {
     return false
   },
-})
+}
+
+const renderer = createRenderer(options)
+
+export function render(element: Instance | (() => Instance), container: any): () => void {
+  return renderer.render(typeof element === 'function' ? element : () => element, {
+    type: '',
+    parent: null,
+    children: [],
+    object: container,
+    props: {},
+  })
+}
+
+// Manually handle ref prop
+export function use<A, T>(fn: (element: Instance, arg: A) => T, element: Instance, arg: A): any {
+  element.props.ref = (self: any) => renderer.use(fn, self, arg)
+}
 
 export const {
   effect,
