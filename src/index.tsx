@@ -12,7 +12,7 @@ const scene = new THREE.Scene()
 
 extend({ GridHelper: THREE.GridHelper })
 reconciler.render(() => <gridHelper args={[4, 4]} />, {
-  type: 'container',
+  type: '',
   parent: null,
   children: [],
   object: scene,
