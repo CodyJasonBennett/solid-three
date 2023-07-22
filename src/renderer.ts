@@ -127,60 +127,55 @@ const options: RendererOptions<Instance> = {
       parent: null,
       children: [],
       object: null,
-      props: { args: [] },
+      props: {},
     }
   },
-  setProperty(node, key, value, prevValue) {
+  setProperty(node, key, value) {
     // Write prop to node
     node.props[key] = value
 
+    // Reconstruct instance on object or args change
+    const parent = node.parent
+    if (parent && (key === 'object' || key === 'args')) {
+      options.removeNode(parent, node)
+      options.insertNode(parent, node)
+    }
     // If at runtime, apply prop directly to the object
-    if (node.object) {
+    else if (node.object) {
       applyProps(node.object, { [key]: value })
-
-      // Reconstruct instance on object or args change
-      if (
-        (node.type === 'primitive' && key === 'object' && value !== prevValue) ||
-        (key === 'args' &&
-          ((value as any[] | undefined)?.length !== (prevValue as any[] | undefined)?.length ||
-            (value as any[] | undefined)?.some((v, i) => v !== (prevValue as any[] | undefined)?.[i])))
-      ) {
-        const parent = node.parent!
-        options.removeNode(parent, node)
-        delete node.object
-        options.insertNode(parent, node)
-      }
     }
   },
   insertNode(parent, child, beforeChild) {
     // Create object on first commit
     if (!child.object) {
+      const { args = [], object, ref, attach, ...props } = child.props
+
       if (child.type === 'primitive') {
         // Validate primitive
-        if (!child.props.object) throw new Error('"object" must be set when using primitives!')
+        if (!object) throw new Error('"object" must be set when using primitives!')
 
         // Link object
-        child.object = child.props.object
+        child.object = object
       } else {
         // Validate target
         const target = catalogue[child.type.charAt(0).toUpperCase() + child.type.substring(1)]
         if (!target) throw new Error(`${child.type} is not a part of the THREE catalog! Did you forget to extend?`)
 
         // Create object
-        child.object = new target(...(child.props.args ?? []))
+        child.object = new target(...args)
       }
 
       // Auto-attach geometry and materials
-      if (child.props.attach === undefined) {
+      if (attach === undefined) {
         if (child.object instanceof THREE.BufferGeometry) child.props.attach = 'geometry'
         else if (child.object instanceof THREE.Material) child.props.attach = 'material'
       }
 
       // Set initial props
-      applyProps(child.object, child.props)
+      applyProps(child.object, props)
 
       // Expose child.object as ref
-      child.props.ref?.(child.object)
+      ref?.(child.object)
     }
 
     // Link nodes
@@ -218,6 +213,7 @@ const options: RendererOptions<Instance> = {
 
     // Safely dispose of object
     if (child.props.dispose !== null && child.type !== 'primitive') child.object.dispose?.()
+    child.object = null
   },
   getParentNode(node) {
     return node.parent ?? undefined
@@ -281,7 +277,7 @@ interface VectorRepresentation extends MathRepresentation {
   setScalar(s: number): any
 }
 type MathType<T extends MathRepresentation | THREE.Euler> = T extends THREE.Color
-  ? ConstructorParameters<typeof THREE.Color> | THREE.ColorRepresentation
+  ? Args<typeof THREE.Color> | THREE.ColorRepresentation
   : T extends VectorRepresentation | THREE.Layers | THREE.Euler
   ? T | Parameters<T['set']> | number
   : T | Parameters<T['set']>
